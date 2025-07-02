@@ -1,30 +1,27 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+from datetime import date
 
 # ---------------------------------------------------------
 # 📦 Utilidades
 # ---------------------------------------------------------
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    """Devuelve el DataFrame en memoria listo para st.download_button."""
     return df.to_csv(index=False).encode("utf-8")
 
 # ---------------------------------------------------------
-# 🔑 Algoritmo de conciliación (pagos totales, parciales, múltiples)
+# 🔑 Algoritmo de conciliación con mora
 # ---------------------------------------------------------
 
 def conciliar(facturas: pd.DataFrame, pagos: pd.DataFrame):
-    """Devuelve facturas, pagos y asignaciones conciliadas."""
-    # Aseguramos columnas numéricas
     facturas["Monto"] = facturas["Monto"].astype(float)
     pagos["Monto"] = pagos["Monto"].astype(float)
 
-    # Columnas auxiliares
     facturas["Pagado"] = 0.0
     facturas["Saldo"] = facturas["Monto"]
 
-    asignaciones = []  # lista de dicts {Pago_idx, Nro Factura, Asignado}
+    asignaciones = []
 
     def allocate(inv_idx: int, monto: float, pago_idx: int):
         saldo = facturas.at[inv_idx, "Saldo"]
@@ -40,19 +37,16 @@ def conciliar(facturas: pd.DataFrame, pagos: pd.DataFrame):
         })
         return aplicado
 
-    # Procesar cada pago
     for p_idx, pago in pagos.iterrows():
         restante = pago["Monto"]
         descripcion = str(pago.get("Descripción", "")).upper()
 
-        # 1️⃣ Asignar por número de factura explícito en la descripción
         for inv_idx, inv in facturas.iterrows():
             if inv["Saldo"] > 0 and str(inv["Nro Factura"]).upper() in descripcion:
                 restante -= allocate(inv_idx, restante, p_idx)
                 if restante < 0.01:
                     break
 
-        # 2️⃣ Asignar al mismo cliente (si existe la columna Cliente)
         if restante > 0.01 and "Cliente" in pagos.columns and "Cliente" in facturas.columns:
             same_client_inv = facturas[(facturas["Cliente"] == pago["Cliente"]) & (facturas["Saldo"] > 0)]
             for inv_idx in same_client_inv.sort_values("Fecha Emisión").index:
@@ -60,7 +54,6 @@ def conciliar(facturas: pd.DataFrame, pagos: pd.DataFrame):
                 if restante < 0.01:
                     break
 
-        # 3️⃣ Asignar a facturas más antiguas sin saldo (fallback)
         if restante > 0.01:
             for inv_idx in facturas[facturas["Saldo"] > 0].sort_values("Fecha Emisión").index:
                 restante -= allocate(inv_idx, restante, p_idx)
@@ -69,7 +62,6 @@ def conciliar(facturas: pd.DataFrame, pagos: pd.DataFrame):
 
         pagos.at[p_idx, "No Asignado"] = round(restante, 2)
 
-    # Estado final de la factura
     def estado(row):
         if row["Saldo"] <= 0.01:
             return "PAGADA"
@@ -77,7 +69,15 @@ def conciliar(facturas: pd.DataFrame, pagos: pd.DataFrame):
             return "PARCIAL"
         return "PENDIENTE"
 
+    def dias_mora(row):
+        if row.get("Tipo Documento") == "FACT" and row["Saldo"] > 0 and pd.notnull(row.get("Fecha Vencimiento")):
+            venc = pd.to_datetime(row["Fecha Vencimiento"]).date()
+            atraso = (date.today() - venc).days
+            return max(atraso, 0)
+        return 0
+
     facturas["Estado"] = facturas.apply(estado, axis=1)
+    facturas["Días Mora"] = facturas.apply(dias_mora, axis=1)
 
     asignaciones_df = pd.DataFrame(asignaciones)
     return facturas, pagos, asignaciones_df
@@ -86,13 +86,13 @@ def conciliar(facturas: pd.DataFrame, pagos: pd.DataFrame):
 # 🎛️ Interfaz Streamlit
 # ---------------------------------------------------------
 
-st.set_page_config(page_title="Conciliador IA v1.1", page_icon="💸", layout="centered")
-st.title("🤖 Conciliador de Facturas y Pagos (v1.1)")
+st.set_page_config(page_title="Conciliador IA v1.2", page_icon="📅", layout="centered")
+st.title("🤖 Conciliador de Facturas y Pagos (v1.2)")
 
 st.markdown("""
 Cargá los dos archivos para generar la conciliación.  
-- **Facturas**: Excel con columnas `Nro Factura`, `Cliente`, `Monto`, `Fecha Emisión` (y opcional `Fecha Vencimiento`).  
-- **Pagos**: CSV o Excel con columnas `Descripción`, `Monto`, `Cliente` (opcional), `Fecha`.
+- **Facturas**: columnas `Nro Factura`, `Cliente`, `Monto`, `Fecha Emisión`, `Tipo Documento`, `Fecha Vencimiento`.  
+- **Pagos**: columnas `Descripción`, `Monto`, `Cliente`, `Fecha`.
 """)
 
 col1, col2 = st.columns(2)
@@ -107,7 +107,6 @@ if facturas_file and pagos_file:
         st.error(f"Error al leer archivos: {e}")
         st.stop()
 
-    # Conciliar
     facturas_out, pagos_out, asignaciones_out = conciliar(facturas_df.copy(), pagos_df.copy())
 
     st.success("✔️ Conciliación completada")
@@ -121,7 +120,6 @@ if facturas_file and pagos_file:
     with st.expander("🔗 Detalle de asignaciones Pago ←→ Factura"):
         st.dataframe(asignaciones_out, use_container_width=True)
 
-    # Descargas
     colA, colB, colC = st.columns(3)
     colA.download_button("⬇️ Facturas conciliadas", data=to_csv_bytes(facturas_out), file_name="facturas_conciliadas.csv", mime="text/csv")
     colB.download_button("⬇️ Pagos consolidados",   data=to_csv_bytes(pagos_out),   file_name="pagos_conciliados.csv",   mime="text/csv")
