@@ -10,6 +10,23 @@ from datetime import date
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
+# Funciones para formateo de fechas y montos
+def formatear_fechas(df: pd.DataFrame, columnas_fecha: list) -> pd.DataFrame:
+    df_copy = df.copy()
+    for col in columnas_fecha:
+        if col in df_copy.columns:
+            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%d-%m-%Y').fillna('')
+    return df_copy
+
+def formatear_montos(df: pd.DataFrame, columnas_monto: list) -> pd.DataFrame:
+    df_copy = df.copy()
+    for col in columnas_monto:
+        if col in df_copy.columns:
+            df_copy[col] = df_copy[col].apply(
+                lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notnull(x) else ""
+            )
+    return df_copy
+
 # ---------------------------------------------------------
 # 🔑 Algoritmo de conciliación con mora
 # ---------------------------------------------------------
@@ -124,16 +141,28 @@ if facturas_file and pagos_file:
     # --- Conciliación ---
     facturas_out, pagos_out, asignaciones_out = conciliar(facturas_df.copy(), pagos_df.copy())
 
+    # --- Formateo para mostrar ---
+    cols_fecha = ["Fecha Emisión", "Fecha Vencimiento", "Fecha"]
+    cols_monto = ["Monto", "Pagado", "Saldo", "Asignado", "No Asignado"]
+
+    facturas_display = formatear_fechas(facturas_out, cols_fecha)
+    facturas_display = formatear_montos(facturas_display, cols_monto)
+
+    pagos_display = formatear_fechas(pagos_out, ["Fecha"])
+    pagos_display = formatear_montos(pagos_display, cols_monto)
+
+    asignaciones_display = formatear_montos(asignaciones_out, ["Asignado"])
+
     st.success("✔️ Conciliación completada")
 
     st.subheader("📋 Facturas")
-    st.dataframe(facturas_out, use_container_width=True)
+    st.dataframe(facturas_display, use_container_width=True)
 
     st.subheader("🏷️ Pagos")
-    st.dataframe(pagos_out, use_container_width=True)
+    st.dataframe(pagos_display, use_container_width=True)
 
     with st.expander("🔗 Detalle de asignaciones Pago ←→ Factura"):
-        st.dataframe(asignaciones_out, use_container_width=True)
+        st.dataframe(asignaciones_display, use_container_width=True)
 
     colA, colB, colC = st.columns(3)
     colA.download_button("⬇️ Facturas conciliadas", data=to_csv_bytes(facturas_out), file_name="facturas_conciliadas.csv", mime="text/csv")
