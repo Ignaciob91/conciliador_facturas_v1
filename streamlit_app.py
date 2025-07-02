@@ -107,6 +107,21 @@ if facturas_file and pagos_file:
         st.error(f"Error al leer archivos: {e}")
         st.stop()
 
+    # --- Limpieza y normalización ---
+    def limpiar_normalizar_columna(df: pd.DataFrame, columna: str) -> pd.Series:
+        if columna in df.columns:
+            return df[columna].astype(str).str.strip().str.upper().str.replace(r"[^\w]", "", regex=True)
+        else:
+            return pd.Series(dtype=str)
+
+    facturas_df["Nro Factura"] = limpiar_normalizar_columna(facturas_df, "Nro Factura")
+    pagos_df["Descripción"] = pagos_df["Descripción"].astype(str).str.upper()
+
+    if "Cliente" in facturas_df.columns and "Cliente" in pagos_df.columns:
+        facturas_df["Cliente"] = limpiar_normalizar_columna(facturas_df, "Cliente")
+        pagos_df["Cliente"] = limpiar_normalizar_columna(pagos_df, "Cliente")
+
+    # --- Conciliación ---
     facturas_out, pagos_out, asignaciones_out = conciliar(facturas_df.copy(), pagos_df.copy())
 
     st.success("✔️ Conciliación completada")
